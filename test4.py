@@ -4,8 +4,10 @@ import ast
 import psycopg2
 import re
 import shapely.geometry
+import shapely.affinity
 import shapely.wkb as wkb
 from pprint import pprint as pp
+import numpy as np
 
 class ZoomSet(object):
   def __init__(self, setx, width, heigth):
@@ -52,6 +54,37 @@ class ZoomSet(object):
     a = (smiesznakrotka[0] - self.avgX())/zoom + self.width/2
     b = (0 - smiesznakrotka[1] + self.avgY())/zoom + self.height/2
     return (int(a),int(b))     
+
+def azimuth(point1, point2):
+  angle = np.arctan2(point2[0] - point1[0], point2[1] - point1[1])
+  return angle
+
+def line_angle(point, length, azimuth):
+  nextx = shapely.geometry.Point(point[0], point[1]+length)
+  ls = shapely.geometry.LineString([point, nextx])
+  return shapely.affinity.rotate(ls, azimuth, origin=shapely.geometry.Point(point), use_radians=True)
+  
+
+class Hebelek(object):
+  def __init__(self, line, distance, length):
+    line_length = line.length
+    p0 = line.interpolate(distance)
+    p1 = line.interpolate(max(distance-1,0))
+    p2 = line.interpolate(min(distance+1,line_length))
+    az = azimuth(p1.coords[0], p2.coords[0])
+    print(az)
+    self.uuk = shapely.geometry.LineString([line_angle(p0.coords[0], length/2, (az+3.142/2)*(-1.0)).coords[1], line_angle(p0.coords[0], length/2, (az-3.142/2)*(-1.0)).coords[1]])
+    self.p0 = p0
+    self.angle = az
+    print(self.uuk.length)
+  def get_intersections(self, linestrings):
+    counter = 0
+    print("*********")
+    for k in linestrings:
+      if(self.uuk.intersects(k)):
+        counter = counter+1
+        print(self.uuk.intersection(k))
+    return counter
 
 class DisjointSet(object):
 
@@ -120,6 +153,7 @@ for alfa in abc:
 zkt = ZoomSet(ccc, 800, 550)
 
 pdict = dict()
+pdict2 = dict()
 
 for alfa in abc:
 #  color = (88, 88, 88)
@@ -135,6 +169,7 @@ for alfa in abc:
 #  lll = lll+1
   x = wkb.loads(alfa[1], hex=True).coords
   pdict.update({alfa[0] : x})
+  pdict2.update({alfa[0] : wkb.loads(alfa[1], hex=True)})
 #  if(lll%1000 == 0):
 #    pygame.display.update()
 #  for t in range(0, len(x)-1):
@@ -149,18 +184,38 @@ def draw_all(dataset, imagex, color, zoom_mode):
 lcz = 0
 for k in ds.group.keys():
   k2 = ds.group[k]
-  if(len(k2) > 2):
+  if(len(k2) > 1):
     lcz = lcz + 1
     image = pygame.Surface([600,600], pygame.SRCALPHA, 32)
     image = image.convert_alpha()
     st = set()
+    st2 = []
     for k3 in k2:
       st |= set(pdict[k3])
+      st2.append(pdict2[k3])
     zs = ZoomSet(st, 600, 600)
+    print("------------------------")
+    print(lcz)
+    hlist = []
     #draw_all(pdict, image, (255, 0, 0), zs)
     for k3 in k2:
       color = (0, 0, 0)
       x = pdict[k3]
+      y = pdict2[k3]
+      cl2 = (0, 255, 0)
+      for t in range(60, int(y.length-59), 60):
+        hhh = Hebelek(y, t, 50)
+        inter = False
+        for p in hlist:
+          if(p.intersects(hhh.uuk)):
+            inter = True
+        if not inter:
+          cl2 = (255, 255, 0)
+          hlist.append(hhh.uuk)
+          f = hhh.get_intersections(st2)
+          cl2 = (0, 255, f*40)
+        pygame.draw.line(image, cl2, zs.get_zoom(hhh.uuk.coords[0]), zs.get_zoom(hhh.uuk.coords[1]))
+        pygame.draw.circle(image, (0, 0, 255, 200), zs.get_zoom(hhh.p0.coords[0]), 8)
       for t in range(0, len(x)-1):
         pygame.draw.line(image, color, zs.get_zoom((x[t][0], x[t][1])), zs.get_zoom((x[t+1][0], x[t+1][1])))
       pygame.draw.circle(image, (0, 255, 255, 128), zs.get_zoom(x[0]), 5)
