@@ -1,3 +1,4 @@
+import operator
 import pygame
 import sys
 import ast
@@ -47,13 +48,13 @@ class ZoomSet(object):
   
 
 
-  def get_zoom(self, smiesznakrotka):
+  def get_zoom(self, smiesznakrotka, posl=(0,0)):
     zoom = (self.maxY - self.minY)/(self.height-10)
     if(self.ratio_type):
       zoom = (self.maxX - self.minX)/(self.width-10)
     a = (smiesznakrotka[0] - self.avgX())/zoom + self.width/2
     b = (0 - smiesznakrotka[1] + self.avgY())/zoom + self.height/2
-    return (int(a),int(b))     
+    return (int(a)+posl[0],int(b)+posl[1])     
 
 def azimuth(point1, point2):
   angle = np.arctan2(point2[0] - point1[0], point2[1] - point1[1])
@@ -63,7 +64,13 @@ def line_angle(point, length, azimuth):
   nextx = shapely.geometry.Point(point[0], point[1]+length)
   ls = shapely.geometry.LineString([point, nextx])
   return shapely.affinity.rotate(ls, azimuth, origin=shapely.geometry.Point(point), use_radians=True)
-  
+
+
+class Lamana(object):
+  def __init__(self, idx, linestring):
+    self.idx = idx
+    self.linestring = linestring
+    self.hebelki = dict()
 
 class Hebelek(object):
   def __init__(self, line, distance, length):
@@ -72,19 +79,27 @@ class Hebelek(object):
     p1 = line.interpolate(max(distance-1,0))
     p2 = line.interpolate(min(distance+1,line_length))
     az = azimuth(p1.coords[0], p2.coords[0])
-    print(az)
+    self.intersections = dict()
     self.uuk = shapely.geometry.LineString([line_angle(p0.coords[0], length/2, (az+3.142/2)*(-1.0)).coords[1], line_angle(p0.coords[0], length/2, (az-3.142/2)*(-1.0)).coords[1]])
     self.p0 = p0
     self.angle = az
-    print(self.uuk.length)
-  def get_intersections(self, linestrings):
-    counter = 0
-    print("*********")
-    for k in linestrings:
-      if(self.uuk.intersects(k)):
-        counter = counter+1
-        print(self.uuk.intersection(k))
-    return counter
+  def set_intersections(self, lamane):
+    for k in lamane:
+      if(self.uuk.intersects(k.linestring)):
+        intr = self.uuk.intersection(k.linestring)
+        if(intr.geom_type=="Point"):
+          odl_lamana = k.linestring.project(intr)
+          odl_hebelek = self.uuk.project(intr)
+          k.hebelki[odl_lamana] = self
+          self.intersections[odl_hebelek] = k
+  def get_average_point(self):
+    avv = 0.0
+    lenx = len(self.intersections)
+    for k in self.intersections:
+      avv = avv + k
+    avv = avv / lenx
+    print("AVERAGE: "+str(avv))
+    return self.uuk.interpolate(avv)
 
 class DisjointSet(object):
 
@@ -186,16 +201,16 @@ for k in ds.group.keys():
   k2 = ds.group[k]
   if(len(k2) > 1):
     lcz = lcz + 1
-    image = pygame.Surface([600,600], pygame.SRCALPHA, 32)
+    image = pygame.Surface([1200,600], pygame.SRCALPHA, 32)
     image = image.convert_alpha()
     st = set()
     st2 = []
+    st3 = []
     for k3 in k2:
       st |= set(pdict[k3])
       st2.append(pdict2[k3])
+      st3.append(Lamana(k3, pdict2[k3]))
     zs = ZoomSet(st, 600, 600)
-    print("------------------------")
-    print(lcz)
     hlist = []
     #draw_all(pdict, image, (255, 0, 0), zs)
     for k3 in k2:
@@ -212,8 +227,7 @@ for k in ds.group.keys():
         if not inter:
           cl2 = (255, 255, 0)
           hlist.append(hhh.uuk)
-          f = hhh.get_intersections(st2)
-          cl2 = (0, 255, f*40)
+          hhh.set_intersections(st3)
         pygame.draw.line(image, cl2, zs.get_zoom(hhh.uuk.coords[0]), zs.get_zoom(hhh.uuk.coords[1]))
         pygame.draw.circle(image, (0, 0, 255, 200), zs.get_zoom(hhh.p0.coords[0]), 8)
       for t in range(0, len(x)-1):
@@ -221,9 +235,25 @@ for k in ds.group.keys():
       pygame.draw.circle(image, (0, 255, 255, 128), zs.get_zoom(x[0]), 5)
       pygame.draw.circle(image, (0, 255, 255, 128), zs.get_zoom(x[len(x)-1]), 5)
     #image.update()
+    for k3 in st3:
+      print(k3.idx)
+      pnt = []
+      for k, v in sorted(k3.hebelki.items(), key=operator.itemgetter(0)):
+        print("__" + str(k))
+        pnt.append(v.get_average_point())
+      for i in range(0, len(pnt)-1):
+      #print(pnt[i].coords)
+      #print(pnt[i+1].coords)
+        print(pnt[i].coords[0])
+        print(pnt[i+1].coords[0])
+        print(zs.get_zoom(pnt[i].coords[0]))
+        pygame.draw.line(image, (0, 0, 255, 200), zs.get_zoom(pnt[i].coords[0], (600, 0)), zs.get_zoom(pnt[i+1].coords[0], (600, 0)))
     pygame.image.save(image, "lcz" + str(lcz) + ".png")
-     
-
+      #for uuk in k3.hebelki:
+      #  stra = "  " + str(uuk) + " :"
+      #  for j in k3.hebelki[uuk].intersections:
+      #    stra = stra + " " + str(j) + "@" + str(k3.hebelki[uuk].intersections[j].idx)
+      #  print(stra)
 
 #cur.execute("SELECT * FROM yyy;")
 
