@@ -9,6 +9,8 @@ import shapely.affinity
 import shapely.wkb as wkb
 from pprint import pprint as pp
 import numpy as np
+import pickle
+from svgpathtools import Path, Line, QuadraticBezier, CubicBezier, Arc, wsvg
 
 
 class ZoomSet(object):
@@ -67,8 +69,9 @@ def line_angle(point, length, azimuth):
     return shapely.affinity.rotate(ls, azimuth, origin=shapely.geometry.Point(point), use_radians=True)
 
 
-class Lamana(object):
+class Lamana(shapely.geometry.LineString):
     def __init__(self, idx, linestring):
+        super(Lamana, self).__init__(linestring.coords) 
         self.idx = idx
         self.linestring = linestring
         self.hebelki = dict()
@@ -84,12 +87,15 @@ class Hebelek(object):
         p1 = line.interpolate(max(distance - 1, 0))
         p2 = line.interpolate(min(distance + 1, line_length))
         az = azimuth(p1.coords[0], p2.coords[0])
+        self.nast = set()
+        self.bef = set()
         self.intersections = dict()
         self.uuk = shapely.geometry.LineString(
             [line_angle(p0.coords[0], length / 2, (az + 3.142 / 2) * (-1.0)).coords[1],
              line_angle(p0.coords[0], length / 2, (az - 3.142 / 2) * (-1.0)).coords[1]])
         self.p0 = p0
         self.angle = az
+        self.todelete = False
 
     def set_intersections(self, lamane):
         for k in lamane:
@@ -97,9 +103,15 @@ class Hebelek(object):
                 intr = self.uuk.intersection(k.linestring)
                 if (intr.geom_type == "Point"):
                     odl_lamana = k.linestring.project(intr)
-                    odl_hebelek = self.uuk.project(intr)
-                    k.hebelki[odl_lamana] = self
-                    self.intersections[odl_hebelek] = k
+                    p1 = k.linestring.interpolate(max(odl_lamana - 1, 0))
+                    p2 = k.linestring.interpolate(min(odl_lamana + 1, k.linestring.length))
+                    az = azimuth(p1.coords[0], p2.coords[0])
+                    az2 = self.angle
+                    az3 = (abs(az-az2) % 3.142)
+                    if az3 < 3.142/4.0 or az3 > 3.142/4.0*3.0:
+                        odl_hebelek = self.uuk.project(intr)
+                        k.hebelki[odl_lamana] = self
+                        self.intersections[odl_hebelek] = k
 
     def get_average_point(self):
         avv = 0.0
@@ -107,8 +119,12 @@ class Hebelek(object):
         for k in self.intersections:
             avv = avv + k
         avv = avv / lenx
-        print("AVERAGE: " + str(avv))
         return self.uuk.interpolate(avv)
+
+    def is_middle(self):
+        if len(self.nast | self.bef) == 2:
+            return True
+        return False
 
 
 class DisjointSet(object):
@@ -141,6 +157,99 @@ class DisjointSet(object):
                 self.leader[a] = self.leader[b] = a
                 self.group[a] = set([a, b])
 
+
+class HebelkiDfsBriges(object):
+
+    def rundfs(self, current, parent):
+        if(current not in self.parentx.visited):
+            if parent == self.startnode:
+                self.tostn = self.tostn + 1
+            self.parentdict[current] = parent
+            self.idarray.append(current)
+            self.iddict[current] = self.currentid
+            self.currentid = self.currentid + 1
+            self.parentx.visited.add(current)
+            is_middle = current in self.parentx.hebelki_longline
+            for x in (current.nast | current.bef):
+                print("XX")
+                if is_middle and (x in self.parentx.hebelki_longline):
+                    pass
+                else:
+                    self.rundfs(x, current)
+
+    def calculatelow(self, current):
+        low = self.iddict[current]
+        for x in (current.nast | current.bef):
+            if x in self.lowdict and self.parentdict[x] == current:
+                low = min(low, self.lowdict[x])
+                if self.lowdict[x] >= self.iddict[current]:
+                    self.artic.add(current)
+        for x in (current.nast | current.bef):
+            if x in self.iddict:
+                if self.parentdict[current] != x:
+                    low = min(low, self.iddict[x])
+        self.lowdict[current] = low
+
+    def __init__(self, parentx, startnode):
+        self.startnode = startnode
+        self.parentx = parentx
+        self.idarray = []
+        self.lowdict = dict()
+        self.parentdict = dict()
+        self.iddict = dict()
+        self.currentid = 0
+        self.tostn = 0
+        self.artic = set()
+        self.rundfs(startnode, None)
+        for i in reversed(range(1, len(self.idarray))):
+            print(str(len(self.idarray))+"@")
+            print(i)
+            self.calculatelow(self.idarray[i])
+        if len((startnode.bef | startnode.nast) - set([startnode])) <= 1:
+            self.artic.add(startnode)
+        elif self.tostn >= 2:
+            self.artic.add(startnode)
+        print("HebelkiDFSBrigEND " + str(len(self.idarray)) + " " + str(len(self.artic)))
+
+class HebelkiDfs(object):
+    def dfscore(self, current_obj):
+        if current_obj not in self.visited:
+            self.visited.add(current_obj)
+            if current_obj.is_middle():
+                self.hebelki_map[current_obj] = self.counter
+                for x in list(current_obj.nast):
+                    self.dfscore(x)
+                for x in list(current_obj.bef):
+                    self.dfscore(x)
+
+    def __init__(self, hebelki_all):
+        self.counter = 0
+        self.hebelki_all = hebelki_all
+        self.visited = set()
+        self.hebelki_map = dict()
+        for x in hebelki_all:
+            if x not in self.visited:
+                self.dfscore(x)
+                self.counter = self.counter + 1
+        self.hebelki_longline = set()
+        self.artic = set()
+        setpom = dict()
+        for x in self.hebelki_map:
+            val = self.hebelki_map[x]
+            if val in setpom:
+                setpom[val] = setpom[val] + 1
+            else:
+                setpom[val] = 1
+        for x in self.hebelki_map:
+            val = self.hebelki_map[x]
+            if val in setpom:
+                if setpom[val] > 2:
+                    self.hebelki_longline.add(x)
+        self.visited = set()
+        for x in hebelki_all:
+            if x not in self.visited:
+                if x not in self.hebelki_longline:
+                    self.artic.update(HebelkiDfsBriges(self, x).artic)
 
 class ZtmRoute(object):
     def __init__(self, lineid, wariant, stoplist, middledict, bezpo):
@@ -177,131 +286,82 @@ class ZtmRoute(object):
             self.res2.append(tmpp)
 
     def extend_hebelki(self, lamane_set):
-
         for x in self.res2:
             tmpp = []
             for y in x:
-                if(y[0] == 0):
-                    tmpp.extend(lamane_set[y[0]].hebelki_sorted)
-                else
-                    tmpp.extend(lamane_set[y[0]].hebelki_sorted_desc)
+                if(y[0] in lamane_set and y[1]==1):
+                    prepared_hebelki = reversed(lamane_set[y[0]].hebelki_sorted())
+                    prepared_hebelki2 = []
+                    for x in prepared_hebelki:
+                        #if not x.todelete:
+                            prepared_hebelki2.append(x)
+                    tmpp.extend(prepared_hebelki2)
+                elif y[0] in lamane_set:
+                    prepared_hebelki = lamane_set[y[0]].hebelki_sorted()
+                    prepared_hebelki2 = []
+                    for x in prepared_hebelki:
+                        #if not x.todelete:
+                            prepared_hebelki2.append(x)
+                    tmpp.extend(prepared_hebelki2)
             self.hebelki.append(tmpp)
+        self.extend_hebelki2()
+
+    def extend_hebelki2(self):
+        for x in self.hebelki:
+            for i in range(0, len(x)-1):
+                x[i][1].nast.add(x[i+1][1])
+                x[i+1][1].bef.add(x[i][1])
 
 
 
 
-screen = pygame.display.set_mode((800, 600))
 
-
-
-
-conn = psycopg2.connect(dbname="nexty", user="marcin")
-
-cur = conn.cursor()
-
-middledict_all = dict()
-
-cur.execute("SELECT * FROM (SELECT y.elem,\
+class Dict_Bezpo(object):
+    def __init__(self, cur):
+        self.dict_bezpo = dict()
+        cur.execute("SELECT * FROM (SELECT y.elem,\
                             y.nr,\
                             s9.id\
                            FROM ( SELECT nicepaths_long_vertices.id,\
                                     nicepaths_long_vertices.ar\
                                    FROM nicepaths_long_vertices) s9\
                              LEFT JOIN LATERAL unnest(s9.ar) WITH ORDINALITY y(elem, nr) ON true) tut ORDER BY id, nr;");
+        abc = cur.fetchall()
+        lastit = None
+        for x in abc:
+            if lastit is not None:
+                if lastit[2] == x[2]:
+                    self.dict_bezpo[(lastit[0], x[0])] = lastit[2]
+            lastit = x
+        self.middledict_all = dict()
+        cur.execute("SELECT ref_begin, ref_end, ordinal_id, node_id FROM osm_paths ORDER BY ref_begin, ref_end, ordinal_id");
+        abc = cur.fetchall()
+        for x in abc:
+            ref_begin = x[0]
+            ref_end = x[1]
+            node_id = x[3]
+            if (ref_begin, ref_end) not in self.middledict_all:
+                self.middledict_all[(ref_begin, ref_end)] = []
+            self.middledict_all[(ref_begin, ref_end)].append(node_id)
+        cur.execute("SELECT * FROM operator_routes ORDER BY route_id, direction, stop_on_direction_number;"); #order_by
+        abc = cur.fetchall()
 
-abc = cur.fetchall()
-dict_bezpo = dict()
-
-lastit = None
-for x in abc:
-    if lastit is not None:
-        if lastit[2] == x[2]:
-            dict_bezpo[(lastit[0], x[0])] = lastit[2]
-    lastit = x
-    #dict_bezpo[()]
-
-cur.execute("SELECT ref_begin, ref_end, ordinal_id, node_id FROM osm_paths ORDER BY ref_begin, ref_end, ordinal_id");
-abc = cur.fetchall()
-for x in abc:
-    ref_begin = x[0]
-    ref_end = x[1]
-    node_id = x[3]
-    if (ref_begin, ref_end) not in middledict_all:
-        middledict_all[(ref_begin, ref_end)] = []
-    middledict_all[(ref_begin, ref_end)].append(node_id)
-cur.execute("SELECT * FROM operator_routes ORDER BY route_id, direction, stop_on_direction_number;"); #order_by
-abc = cur.fetchall()
-
-currentLine = ""
-currentWar = -1
-currentSet = []
-ztmAll = dict()
+        currentLine = ""
+        currentWar = -1
+        currentSet = []
+        self.ztmAll = dict()
 
 
-for x in abc:
-    if currentLine != x[0] or x[1] != currentWar:
+        for x in abc:
+            if currentLine != x[0] or x[1] != currentWar:
+                if len(currentSet) > 0:
+                    self.ztmAll[(currentLine, currentWar)] = ZtmRoute(currentLine, currentWar, currentSet, self.middledict_all, self.dict_bezpo)
+                    currentSet = []
+                    currentLine = x[0]
+                    currentWar = x[1]
+            currentSet.append(x[3])
         if len(currentSet) > 0:
-            ztmAll[(currentLine, currentWar)] = ZtmRoute(currentLine, currentWar, currentSet, middledict_all, dict_bezpo)
-            currentSet = []
-            currentLine = x[0]
-            currentWar = x[1]
-    currentSet.append(x[3])
-if len(currentSet) > 0:
-    ztmAll[(currentLine, currentWar)] = ZtmRoute(currentLine, currentWar, currentSet, middledict_all, dict_bezpo)
-
-for alfa in ztmAll:
-    print(alfa)
-    print(ztmAll[alfa].res2)
-# cur.execute("SELECT * FROM (SELECT l1, l2, count(*) FROM graph2 GROUP BY l1, l2) xxx WHERE count > 2;");
-# cur.execute("SELECT * FROM lol WHERE visited=true");
-# xyz = cur.fetchall()
-pygame.init()
-
-ds = DisjointSet()
-
-# cur.execute("SELECT yyy.id, spec_lines3.id FROM yyy, spec_lines3 WHERE ST_Intersects(spec_lines3.line, yyy.create_line_crazy2);");
-cur.execute("SELECT * FROM nicepaths_fin2");
-abc = cur.fetchall()
-for alfa in abc:
-    ds.add(alfa[0], alfa[1])
-
-cur.execute("SELECT * FROM nicepaths_vertices_coordinates;")
-
-abc = cur.fetchall()
-lll = 0
-
-ccc = set()
-for alfa in abc:
-    x = wkb.loads(alfa[1], hex=True).coords
-    for t in range(0, len(x)):
-        ccc.add(x[t])
-
-zkt = ZoomSet(ccc, 800, 550)
-
-pdict = dict()
-pdict2 = dict()
-
-for alfa in abc:
-    #  color = (88, 88, 88)
-    #  print(alfa[0])
-    #  if not alfa[0] in ds.leader.keys():
-    #    color = (255, 0, 0)
-    #  else:
-    #    sl = len(ds.group[ds.leader[alfa[0]]])
-    #    if(sl == 1):
-    #      color = (0, 255, 0)
-    #    if(sl == 2):
-    #      color = (120, 120, 255)
-    #  lll = lll+1
-    x = wkb.loads(alfa[1], hex=True).coords
-    pdict.update({alfa[0]: x})
-    pdict2.update({alfa[0]: wkb.loads(alfa[1], hex=True)})
-
-
-# if(lll%1000 == 0):
-#    pygame.display.update()
-#  for t in range(0, len(x)-1):
-#    pygame.draw.line(screen, color, zkt.get_zoom((x[t][0], x[t][1])), zkt.get_zoom((x[t+1][0], x[t+1][1])))
+            self.ztmAll[(currentLine, currentWar)] = ZtmRoute(currentLine, currentWar, currentSet, self.middledict_all, self.dict_bezpo)
 
 def draw_all(dataset, imagex, color, zoom_mode):
     for x in dataset.values():
@@ -309,119 +369,119 @@ def draw_all(dataset, imagex, color, zoom_mode):
             pygame.draw.line(imagex, color, zoom_mode.get_zoom((x[t][0], x[t][1])),
                              zoom_mode.get_zoom((x[t + 1][0], x[t + 1][1])))
 
+def srumpy(coords):
+    return coords[0] - 1.0j*(coords[1])
 
-lcz = 0
+
+def manage_vals(id, cbc):
+    #if cbc not in dfs_costam.hebelki_longline:
+    #    if cbc not in dfs_costam.artic:
+    #       return "b"
+    return "r"
+    #id2 = id % 12
+    #zupa = ['a', 'b', 'c', 'd', 'g', 'l', 'm', 'p', 'q', 's', 'v', 'z']
+    #return zupa[id2]
+
+
+class DisjointSetCreator(object):
+    def __init__(self, cur):
+        self.ds = DisjointSet()
+        cur.execute("SELECT * FROM nicepaths_fin2");
+        abc = cur.fetchall()
+        for alfa in abc:
+            self.ds.add(alfa[0], alfa[1])
+
+   
+ 
+
+
+conn = psycopg2.connect(dbname="nexty", user="marcin")
+
+cur = conn.cursor()
+
+
+ztmAll0 = Dict_Bezpo(cur)
+ds0 = DisjointSetCreator(cur)
+ds = ds0.ds
+ztmAll = ztmAll0.ztmAll
+
+
+
+cur.execute("SELECT * FROM nicepaths_vertices_coordinates;")
+
+abc = cur.fetchall()
+
 
 linie_prz_all = dict()
 
+for alfa in abc:
+    linie_prz_all[alfa[0]] = Lamana(alfa[0], wkb.loads(alfa[1], hex=True))
+
+hebelki_all = set()
 
 
 for k in ds.group.keys():
     k2 = ds.group[k]
-    if (len(k2) > 1):
-        lcz = lcz + 1
-        image = pygame.Surface([1200, 600], pygame.SRCALPHA, 32)
-        image = image.convert_alpha()
-        st = set()
-        st2 = []
+    if (len(k2) >= 1):
         st3 = []
         for k3 in k2:
-            st |= set(pdict[k3])
-            st2.append(pdict2[k3])
-            lmn = Lamana(k3, pdict2[k3])
+            lmn = linie_prz_all[k3]
             st3.append(lmn)
-            linie_prz_all[k3] = lmn
-        zs = ZoomSet(st, 600, 600)
         hlist = []
-        # draw_all(pdict, image, (255, 0, 0), zs)
         for k3 in k2:
-            color = (0, 0, 0)
-            x = pdict[k3]
-            y = pdict2[k3]
-            cl2 = (0, 255, 0)
-            for t in range(60, int(y.length - 59), 60):
+            y = linie_prz_all[k3].linestring
+            for t in range(40, int(y.length - 39), 40):
                 hhh = Hebelek(y, t, 50)
                 inter = False
                 for p in hlist:
                     if (p.intersects(hhh.uuk)):
                         inter = True
                 if not inter:
-                    cl2 = (255, 255, 0)
                     hlist.append(hhh.uuk)
                     hhh.set_intersections(st3)
-                pygame.draw.line(image, cl2, zs.get_zoom(hhh.uuk.coords[0]), zs.get_zoom(hhh.uuk.coords[1]))
-                pygame.draw.circle(image, (0, 0, 255, 200), zs.get_zoom(hhh.p0.coords[0]), 8)
-            for t in range(0, len(x) - 1):
-                pygame.draw.line(image, color, zs.get_zoom((x[t][0], x[t][1])), zs.get_zoom((x[t + 1][0], x[t + 1][1])))
-            pygame.draw.circle(image, (0, 255, 255, 128), zs.get_zoom(x[0]), 5)
-            pygame.draw.circle(image, (0, 255, 255, 128), zs.get_zoom(x[len(x) - 1]), 5)
-        # image.update()
-        for k3 in st3:
-            print(k3.idx)
-            pnt = []
-            for k, v in sorted(k3.hebelki.items(), key=operator.itemgetter(0)):
-                print("__" + str(k))
-                pnt.append(v.get_average_point())
-            for i in range(0, len(pnt) - 1):
-                # print(pnt[i].coords)
-                # print(pnt[i+1].coords)
-                print(pnt[i].coords[0])
-                print(pnt[i + 1].coords[0])
-                print(zs.get_zoom(pnt[i].coords[0]))
-                pygame.draw.line(image, (0, 0, 255, 200), zs.get_zoom(pnt[i].coords[0], (600, 0)),
-                                 zs.get_zoom(pnt[i + 1].coords[0], (600, 0)))
-        pygame.image.save(image, "lcz" + str(lcz) + ".png")
-        # for uuk in k3.hebelki:
-        #  stra = "  " + str(uuk) + " :"
-        #  for j in k3.hebelki[uuk].intersections:
-        #    stra = stra + " " + str(j) + "@" + str(k3.hebelki[uuk].intersections[j].idx)
-        #  print(stra)
-
+                    hebelki_all.add(hhh)
 
 for a in ztmAll:
-    a.extend_hebelki(linie_prz_all)
+    #if(a[0]=="147" and a[1]==1):
+        ztmAll[a].extend_hebelki(linie_prz_all)
 
-# cur.execute("SELECT * FROM yyy;")
 
-# abc = cur.fetchall()
-# lll = 0
-# for alfa in abc:
-#  lll = lll+1
-#  x = wkb.loads(alfa[1], hex=True).coords
-#  print(lol((x[0][0], x[0][1])))
-#  print(lol((x[1][0], x[1][1])))
-#  if(lll%1000 == 0):
-#    pygame.display.update()
-#  if(len(x) >= 2):
-#    pygame.draw.line(screen, (111, 111, 111), lol((x[0][0], x[0][1])), lol((x[1][0], x[1][1])))
+#pickle.dump(hebelki_all, 'hebelki.pickle')
 
-# cur.execute("SELECT * FROM SZTACHETY;")
-# abc = cur.fetchall()
-# for alfa in abc:
-#  if(alfa[1] is not None and alfa[2] is not None and alfa[3] is not None):
-#  	pygame.draw.line(screen, (111, 111, 111), lol((alfa[0], alfa[1])), lol((alfa[2], alfa[3])))
-#
-# for alfa in xyz:
-#  txt = alfa[3]
-#  txt = txt.replace('"', '')
-#  txt = txt.replace("{", "")
-#  txt = txt.replace("}", "")
-#  txt = txt.replace("(", "")
-#  txt = txt.replace(")", "")
-#  txt2 = txt.split(",")
-#  txt3 = [float(x) for x in txt2]
-#  for x in range(0, len(txt3)-3, 2):
-#    pygame.draw.line(screen, (255,255,255), lol((txt3[x], txt3[x+1])), lol((txt3[x+2], txt3[x+3])))
-#  if(alfa[2]>1):
-#    pygame.draw.circle(screen, (0,0,alfa[3]*30), lol((alfa[0], alfa[1])), 5, 0)
-#  else:
-#    pygame.draw.circle(screen, (255,0,alfa[3]*30), lol((alfa[0], alfa[1])), 3, 0)
+paths = []
+stroke_widths = []
+
+print("Hebelki start")
+dfs_costam = HebelkiDfs(hebelki_all)
+print("Hebelki stop")
 
 
 
 
-# pygame.display.update()
+colors = ""
+srodes = []
+radii = []
+for a in hebelki_all:
+    current_color = "k"
+    if a not in dfs_costam.hebelki_longline:
+        if a not in dfs_costam.artic:
+            srodes.append(srumpy(a.get_average_point().coords[0]))
+            radii.append(5)
+    if a in dfs_costam.hebelki_map:
+        vals = dfs_costam.hebelki_map[a]
+        current_color = manage_vals(vals, a)
+    current_color1 = current_color
+    for b in a.nast:
+        current_color = current_color1
+        if b in dfs_costam.hebelki_map:
+            vals = dfs_costam.hebelki_map[b]
+            current_color = manage_vals(vals, a)
+        lenx = shapely.geometry.LineString([a.get_average_point().coords[0], b.get_average_point().coords[0]]).length
+        paths.append(Line(srumpy(a.get_average_point().coords[0]), srumpy(b.get_average_point().coords[0])))
+        if lenx > 70:
+            stroke_widths.append(3.5)
+        else:
+            stroke_widths.append(1)
+        colors = colors + current_color
+wsvg(paths, colors=colors, nodes=srodes, node_radii=radii, filename='output1.svg', stroke_widths=stroke_widths)
 
-
-
-# input("Press enter to exit ;)")
