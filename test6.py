@@ -1,190 +1,219 @@
-import operator
-import pygame
-import sys
-import ast
-import psycopg2
-import re
+from libmrc2 import part_mn, HebelkiDfs, hebelek_in_zakres, PackAllMy, srumpy
+from svgpathtools import Path, Line, QuadraticBezier, CubicBezier, Arc, wsvg
+
 import shapely.geometry
 import shapely.affinity
 import shapely.wkb as wkb
-from pprint import pprint as pp
-import numpy as np
-import pickle
+
+import sys
 import math
-from svgpathtools import Path, Line, QuadraticBezier, CubicBezier, Arc, wsvg
-import libmrc
+from PyQt4 import QtGui, QtCore
+from PyQt4.QtGui import *
+
+from lluk import LLuk
+from pazur import Pazur
+from map_canvas import PainterLine, PainterLLuk, MapCanvas
+
+from shapely import speedups
+
+my_canvases = []
+
+class PainterLineNormal(PainterLine):
+    def __init__(self, x1, y1, x2, y2, color=QtGui.QColor('black'), stroke=1):
+        PainterLine.__init__(self, x1, y1, x2, y2, color, stroke)
+    def getDistance(self, position):
+        return 2000
+
+class PainterLinePazur(PainterLine):
+    def __init__(self, x1, y1, x2, y2, color=QtGui.QColor('black'), stroke=1, pazur=None):
+        PainterLine.__init__(self, x1, y1, x2, y2, color, stroke)
+        self.pazur = pazur
+    def select(self):
+        my_canvases[1].shapes.clear()
+        drawPazur(self.pazur, my_canvases[1].shapes)
+        my_canvases[1].update()
+        self.selected = True
+
+class PainterLineHebelek(PainterLine):
+    def __init__(self, x1, y1, x2, y2, color=QtGui.QColor('black'), stroke=1, hebelek=None):
+        PainterLine.__init__(self, x1, y1, x2, y2, color, stroke)
+        self.hebelek = hebelek
+    def select(self):
+        print("========")
+        print(self.hebelek)
+        print("before:")
+        for x in self.hebelek.bef:
+            print(x)
+        print("after:")
+        for x in self.hebelek.nast:
+            print(x)
+        for aaa, x in trasy.items():
+            contains = False
+            for c in x.hebelki:
+                for a, b in c:
+                    if b == self.hebelek:
+                        contains = True
+            if contains:
+                print("LINIA " + str(x.lineid) + " " + str(x.wariant))
+                print(len(x.hebelki2))
+                for z in x.hebelki2:
+                    print("^^^")
+                    for zz in z:
+                        print(zz)
+        my_canvases[1].update()
+        self.selected = True
+
+class MyCanvas(MapCanvas):
+    def __init__(self, width, height):
+        MapCanvas.__init__(self, width, height)
+        self.selection_x1 = None
+        self.selection_y1 = None
+        self.selection_x2 = None
+        self.selection_y2 = None
+        self.selected_object = None
+        self.move = False
+        self.paint_tiles = False
+
+    def mousePressEvent(self, event):
+        # print('pressed:', event.button())
+        distance, foo = self.getClosestObject(event.x(), event.y())
+        if distance < 10:
+            if self.selected_object is not None:
+                self.selected_object.clear_selection()
+            self.selected_object = foo
+            self.selected_object.select()
+        else:
+            self.move = True
+            self.selection_x1 = event.x()
+            self.selection_y1 = event.y()
+        self.update()
+    def mouseReleaseEvent(self, event):
+        if self.move:
+            self.selection_x2 = event.x()
+            self.selection_y2 = event.y()
+            self.move = False
+            for x in my_canvases:
+                x.position = x.position.shiftCopy(self.selection_x2 - self.selection_x1, self.selection_y2 - self.selection_y1)
+                x.update()
+
+    def mouseMoveEvent(self, event):
+        self.currentx = event.x()
+        self.currenty = event.y()
 
 
-class HebelkiDfsBriges(object):
+    def pluss(self):
+        if self.position.zoom == 18:
+            return
+        self.position = self.position.shiftCopy(self.currentx * -1, self.currenty * -1).zoomIn().shiftCopy(self.currentx, self.currenty)
+        for x in my_canvases:
+            x.position = self.position
+            x.update()
 
-    def rundfs(self, current, parent):
-        if(current not in self.parentx.visited):
-            if parent == self.startnode:
-                self.tostn = self.tostn + 1
-            self.parentdict[current] = parent
-            self.idarray.append(current)
-            self.iddict[current] = self.currentid
-            self.currentid = self.currentid + 1
-            self.parentx.visited.add(current)
-            is_middle = current in self.parentx.hebelki_longline
-            for x in (current.nast | current.bef):
-                if is_middle and (x in self.parentx.hebelki_longline):
-                    pass
-                else:
-                    self.rundfs(x, current)
-
-    def calculatelow(self, current):
-        low = self.iddict[current]
-        for x in (current.nast | current.bef):
-            if x in self.lowdict and self.parentdict[x] == current:
-                low = min(low, self.lowdict[x])
-                if self.lowdict[x] >= self.iddict[current]:
-                    self.artic.add(current)
-        for x in (current.nast | current.bef):
-            if x in self.iddict:
-                if self.parentdict[current] != x:
-                    low = min(low, self.iddict[x])
-        self.lowdict[current] = low
-
-    def __init__(self, parentx, startnode):
-        self.startnode = startnode
-        self.parentx = parentx
-        self.idarray = []
-        self.lowdict = dict()
-        self.parentdict = dict()
-        self.iddict = dict()
-        self.currentid = 0
-        self.tostn = 0
-        self.artic = set()
-        self.rundfs(startnode, None)
-        for i in reversed(range(1, len(self.idarray))):
-            self.calculatelow(self.idarray[i])
-        if len((startnode.bef | startnode.nast) - set([startnode])) <= 1:
-            self.artic.add(startnode)
-        elif self.tostn >= 2:
-            self.artic.add(startnode)
-
-class HebelkiDfs(object):
-    def dfscore(self, current_obj):
-        if current_obj not in self.visited:
-            self.visited.add(current_obj)
-            if current_obj.is_middle():
-                self.hebelki_map[current_obj] = self.counter
-                for x in list(current_obj.nast):
-                    self.dfscore(x)
-                for x in list(current_obj.bef):
-                    self.dfscore(x)
-
-    def __init__(self, hebelki_all):
-        self.counter = 0
-        self.hebelki_all = hebelki_all
-        self.visited = set()
-        self.hebelki_map = dict()
-        for x in hebelki_all:
-            if x not in self.visited:
-                self.dfscore(x)
-                self.counter = self.counter + 1
-        self.hebelki_longline = set()
-        self.artic = set()
-        setpom = dict()
-        for x in self.hebelki_map:
-            val = self.hebelki_map[x]
-            if val in setpom:
-                setpom[val] = setpom[val] + 1
-            else:
-                setpom[val] = 1
-        for x in self.hebelki_map:
-            val = self.hebelki_map[x]
-            if val in setpom:
-                if setpom[val] > 2:
-                    self.hebelki_longline.add(x)
-        self.visited = set()
-        for x in hebelki_all:
-            if x not in self.visited:
-                if x not in self.hebelki_longline:
-                    self.artic.update(HebelkiDfsBriges(self, x).artic)
-def draw_all(dataset, imagex, color, zoom_mode):
-    for x in dataset.values():
-        for t in range(0, len(x) - 1):
-            pygame.draw.line(imagex, color, zoom_mode.get_zoom((x[t][0], x[t][1])),
-                             zoom_mode.get_zoom((x[t + 1][0], x[t + 1][1])))
-
-def srumpy(coords):
-    return coords[0] - 1.0j*(coords[1])
+    def minuss(self):
+        #if self.position.zoom == 10:
+        #    return
+        self.position = self.position.shiftCopy(self.currentx * -1, self.currenty * -1).zoomOut().shiftCopy(self.currentx, self.currenty)
+        self.update()
+        for x in my_canvases:
+            x.position = self.position
+            x.update()
 
 
-def manage_vals(id, cbc):
-    #if cbc not in dfs_costam.hebelki_longline:
-    #    if cbc not in dfs_costam.artic:
-    #       return "b"
-    return "r"
-    #id2 = id % 12
-    #zupa = ['a', 'b', 'c', 'd', 'g', 'l', 'm', 'p', 'q', 's', 'v', 'z']
-    #return zupa[id2]
+class App(QtGui.QWidget):
+    def __init__(self):
+        super(App, self).__init__()
+        self.initUI()
+
+    def initUI(self):
+
+        self.vbox = QtGui.QVBoxLayout(self)
+        self.hbox = QtGui.QHBoxLayout(self)
+        self.setLayout(self.vbox)
+
+        # --- canvas - created to get tool list ---
+
+        self.canvas = MyCanvas(620, 600)
+        self.canvas2 = MyCanvas(620, 600)
+        global my_canvases
+        my_canvases = [self.canvas, self.canvas2]
+
+        # --- tool buttons ---
+
+        self.hboxTools = QtGui.QHBoxLayout()
+
+        '''
+        for name, shape in self.canvas.tools:
+            btn = QtGui.QPushButton(name)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.clicked.connect(lambda x, s=shape: self.canvas.setShape(s))
+            self.hboxTools.addWidget(btn)
+
+            if name == 'Rectangle':
+                btn.setChecked(True)
+        '''
+        self.btnToolsGroup = QtGui.QGroupBox("Tool")
+        self.btnToolsGroup.setLayout(self.hboxTools)
+        self.vbox.addWidget(self.btnToolsGroup)
+        self.vbox.addLayout(self.hbox)
+        # --- canvas - add to window ---
+
+        self.hbox.addWidget(self.canvas)
+        self.hbox.addWidget(self.canvas2)
+
+        # --- color buttons ----
+
+        self.hboxColors = QtGui.QHBoxLayout()
+
+        '''
+        for name, color in self.canvas.pallete:
+
+            btn = QtGui.QPushButton(name, self)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.clicked.connect(lambda x, c=color: self.canvas.setColor(c))
+            self.hboxColors.addWidget(btn)
+
+            if name == 'Black':
+                btn.setChecked(True)
+        '''
+        self.btnColorsGroup = QtGui.QGroupBox("Border")
+        self.btnColorsGroup.setLayout(self.hboxColors)
+        self.vbox.addWidget(self.btnColorsGroup)
+
+        # --- fill buttons ----
+
+        self.hboxFills = QtGui.QHBoxLayout()
+        '''
+        for name, color in self.canvas.pallete:
+
+            btn = QtGui.QPushButton(name, self)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.clicked.connect(lambda x, c=color: self.canvas.setFill(c))
+            self.hboxFills.addWidget(btn)
+
+            if name == 'None':
+                btn.setChecked(True)
+        '''
+        self.btnFillsGroup = QtGui.QGroupBox("Fill")
+        self.btnFillsGroup.setLayout(self.hboxFills)
+        self.vbox.addWidget(self.btnFillsGroup)
+
+        # ---
+
+        # self.setGeometry(300, 300, 600, 170)
+        self.setWindowTitle('MyCanvas')
+        self.show()
 
 
-
-class PackAllMy(libmrc.PackAll):
-    def __init__(self, lamane, trasy, ds):
-        super(PackAllMy, self).__init__(lamane, trasy) 
-        for k in ds.group.keys():
-            k2 = ds.group[k]
-            if (len(k2) >= 1):
-                st3 = []
-                for k3 in k2:
-                    lmn = self.lamane[k3]
-                    st3.append(lmn)
-                hlist = []
-                for k3 in k2:
-                    y = self.lamane[k3]
-                    for t in range(40, int(y.length - 39), 40):
-                        hhh = libmrc.Hebelek(y, t, 50)
-                        inter = False
-                        for p in hlist:
-                            if (p.intersects(hhh)):
-                                inter = True
-                        if not inter:
-                            hlist.append(hhh)
-                            hhh.set_intersections(st3)
-                            self.hebelki.append(hhh)
-        for a in self.trasy:
-            self.trasy[a].extend_hebelki(self.lamane)
-
-
-def hebelek_in_zakres(hebelek, x, y, zakres):
-    ptt = hebelek.get_average_point().coords[0]
-    if(ptt[0] >= x-zakres and ptt[0] <= x+zakres):
-        if(ptt[1] >= y-zakres and ptt[1] <= y+zakres):
-            return True
-
-pkl_file = open('hebelki.pickle', 'rb')
-pick = pickle.load(pkl_file)
-
-hebelki_all = pick.hebelki
-
-paths = []
-stroke_widths = []
-
-dfs_costam = HebelkiDfs(hebelki_all)
-
-hebelki_all2 = set()
-
-
-for a in hebelki_all:
-    if a not in dfs_costam.hebelki_longline:
-        if a not in dfs_costam.artic:
-            a.todelete = True
-    if a.todelete == False:
-        hebelki_all2.add(a)
-    a.nast.clear()
-    a.bef.clear()
-
-for a in pick.trasy:
-    trasa = pick.trasy[a]
-    trasa.extend_hebelki(pick.lamane)
-hebelki_all = hebelki_all2
-dfs_costam = HebelkiDfs(hebelki_all)
-
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == QtCore.Qt.Key_Plus :
+            self.canvas.pluss()
+        if key == QtCore.Qt.Key_Minus :
+            self.canvas.minuss()
+'''
 conn = psycopg2.connect(dbname="nexty", user="marcin")
 
 cur = conn.cursor()
@@ -207,34 +236,219 @@ for x in abc:
 
 print(xxx)
 print(yyy)
+'''
+def manage_vals(id, cbc):
+    if cbc not in dfs_costam.hebelki_longline:
+        if cbc not in dfs_costam.artic:
+            return "yellow"
+    return "black"
 
-colors = ""
-srodes = []
-radii = []
-for a in hebelki_all:
-    if hebelek_in_zakres(a, xxx, yyy, 1500):
-        current_color = "k"
-        colors = colors + "c"
-        stroke_widths.append(1)
-        paths.append(Line(srumpy(a.linestring.coords[0]), srumpy(a.linestring.coords[1])))
-        if a not in dfs_costam.hebelki_longline:
-            if a not in dfs_costam.artic:
-                srodes.append(srumpy(a.get_average_point().coords[0]))
-                radii.append(5)
-        if a in dfs_costam.hebelki_map:
-            vals = dfs_costam.hebelki_map[a]
-            current_color = manage_vals(vals, a)
-        current_color1 = current_color
-        for b in a.nast:
-            current_color = current_color1
-            if b in dfs_costam.hebelki_map:
-                vals = dfs_costam.hebelki_map[b]
-                current_color = manage_vals(vals, a)
-            lenx = shapely.geometry.LineString([a.get_average_point().coords[0], b.get_average_point().coords[0]]).length
-            paths.append(Line(srumpy(a.get_average_point().coords[0]), srumpy(b.get_average_point().coords[0])))
-            if lenx > 70:
-                stroke_widths.append(3.5)
-            else:
+def drawPazur(p, canvas_shapes):
+    print(p.get_hash())
+    bef = None
+    for x in p.hebelek_list:
+        if bef is not None:
+            x1, y1 = bef.get_average_point().coords[0]
+            x2, y2 = x.get_average_point().coords[0]
+            #canvas_shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor("black"), 3))
+        bef = x
+    for x in p.pazur_start:
+        x1, y1 = x.get_average_point().coords[0]
+        x2, y2 = p.hebelek_list[0].get_average_point().coords[0]
+        #canvas_shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor("black"), 1))
+    for x in p.pazur_stop:
+        x1, y1 = x.get_average_point().coords[0]
+        x2, y2 = p.hebelek_list[-1].get_average_point().coords[0]
+        #canvas_shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor("black"), 1))
+
+    for y in p.core_linestring_set:
+        bef = None
+        for x in y.coords:
+            if bef is not None:
+                x1, y1 = bef
+                x2, y2 = x
+                canvas_shapes.add(PainterLineNormal(x1, y1, x2, y2))
+            bef = x
+
+    for a in p.hebelek_list:
+        x1, y1 = a.linestring.coords[0]
+        x2, y2 = a.linestring.coords[1]
+        canvas_shapes.add(PainterLineHebelek(x1, y1, x2, y2, QtGui.QColor('blue'), hebelek=a))
+
+    for a in p.man_rect:
+        try:
+            bef = a.rectangle.exterior.coords[-1]
+            for x in a.rectangle.exterior.coords:
+                if bef is not None:
+                    x1, y1 = bef
+                    x2, y2 = x
+                    canvas_shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor('red'), 2))
+                bef = x
+        except Exception:
+            pass
+
+    if p.luck2 is not None:
+        if len(p.luck2.exterior.coords) > 0:
+            bef = p.luck2.exterior.coords[-1]
+            for x in p.luck2.exterior.coords:
+                if bef is not None:
+                    my_canvases[1].shapes.add(PainterLineNormal(bef[0], bef[1], x[0], x[1]))
+                bef = x
+
+
+if __name__ == '__main__':
+
+    hebelki_all, lamane, trasy = part_mn(True)
+    dfs_costam = HebelkiDfs(hebelki_all)
+
+    svg = False
+
+    if svg:
+        colors = ""
+        paths = []
+        stroke_widths = []
+        srodes = []
+        radii = []
+        for a in hebelki_all:
+            if hebelek_in_zakres(a, 30000, 30000, 2000):
+                current_color = "k"
+                colors = colors + "c"
                 stroke_widths.append(1)
-            colors = colors + current_color
-wsvg(paths, colors=colors, nodes=srodes, node_radii=radii, filename='output1.svg', stroke_widths=stroke_widths)
+                paths.append(Line(srumpy(a.linestring.coords[0]), srumpy(a.linestring.coords[1])))
+                zzz = a.get_average_point().coords[0]
+                if a not in dfs_costam.hebelki_longline:
+                    if a not in dfs_costam.artic:
+                        srodes.append(srumpy(a.get_average_point().coords[0]))
+                        radii.append(5)
+                if a in dfs_costam.hebelki_map:
+                    vals = dfs_costam.hebelki_map[a]
+                    current_color = manage_vals(vals, a)
+                current_color1 = current_color
+                for b in a.nast:
+                    current_color = current_color1
+                    if b in dfs_costam.hebelki_map:
+                        vals = dfs_costam.hebelki_map[b]
+                        current_color = manage_vals(vals, a)
+                    lenx = shapely.geometry.LineString([a.get_average_point().coords[0], b.get_average_point().coords[0]]).length
+                    paths.append(Line(srumpy(a.get_average_point().coords[0]), srumpy(b.get_average_point().coords[0])))
+                    if lenx > 70:
+                        stroke_widths.append(3.5)
+                    else:
+                        stroke_widths.append(1)
+                    colors = colors + current_color
+        wsvg(paths, colors=colors, nodes=srodes, node_radii=radii, filename='output1.svg', stroke_widths=stroke_widths)
+    else:
+        print(speedups.available)
+        speedups.enable()
+        app = QtGui.QApplication(sys.argv)
+        ex = App()
+
+
+
+        for p in Pazur.create_pazurs(trasy, hebelki_all):
+
+            if p.luck is not None:
+                my_canvases[0].shapes.add(PainterLLuk(p.luck))
+
+
+
+
+
+            bef = None
+            for x in p.hebelek_list:
+                if bef is not None:
+                    x1, y1 = bef.get_average_point().coords[0]
+                    x2, y2 = x.get_average_point().coords[0]
+                    collor = "black"
+                    my_canvases[0].shapes.add(PainterLinePazur(x1, y1, x2, y2, QtGui.QColor(collor), 1, p))
+                bef = x
+
+            for a, b, c in p.luck3:
+                if a is None:
+                    my_canvases[0].shapes.add(PainterLineNormal(b[0], b[1], c[0], c[1], QtGui.QColor("blue"), 3))
+                else:
+                    my_canvases[0].shapes.add(PainterLLuk(a))
+
+            if p.best_bef is not None:
+                x = (p.hebelek_list[0].get_average_point().coords[0], p.best_bef[0].hebelek_list[p.best_bef[1]].get_average_point().coords[0])
+                my_canvases[0].shapes.add(PainterLineNormal(x[0][0], x[0][1], x[1][0], x[1][1], QtGui.QColor('black'), 3))
+            if p.best_nex is not None:
+                x = (p.hebelek_list[-1].get_average_point().coords[0], p.best_nex[0].hebelek_list[p.best_nex[1]].get_average_point().coords[0])
+                my_canvases[0].shapes.add(PainterLineNormal(x[0][0], x[0][1], x[1][0], x[1][1], QtGui.QColor('black'), 3))
+
+            '''
+            try:
+                bef = None
+                rml = p.get_rects_main_line()
+                if len(rml) == 1:
+                    x = rml[0]
+                    my_canvases[0].shapes.add(PainterLineNormal(x[0][0], x[0][1], x[1][0], x[1][1], QtGui.QColor('blue'), 3))
+                for x in rml:
+                    try:
+                        if bef is not None:
+                            luck = LLuk.create_lluk_special([bef[0], bef[1], x[0], x[1]], 50)
+                            my_canvases[0].shapes.add(PainterLLuk(luck[0]))
+                            my_canvases[0].shapes.add(PainterLineNormal(luck[1][0], luck[1][1], luck[2][0], luck[2][1], QtGui.QColor('blue'), 3))
+                        bef = x
+                    except Exception as e:
+                        print('Handling run-time error:', e)
+                        bef = None
+                if len(rml) > 0:
+                    for p2, mode in p.ancestor_bef:
+                        if len(p2.get_rects_main_line()) > 0:
+                            bef = p2.get_rects_main_line()[mode]
+                            x = p.get_rects_main_line()[0]
+                            try:
+                                if bef is not None:
+                                    luck = LLuk.create_lluk_special([bef[0], bef[1], x[0], x[1]], 50)
+                                    my_canvases[0].shapes.add(PainterLLuk(luck[0]))
+                                    my_canvases[0].shapes.add(
+                                        PainterLineNormal(luck[1][0], luck[1][1], luck[2][0], luck[2][1],
+                                                          QtGui.QColor('blue'), 3))
+                            except Exception as e:
+                                pass
+                    for p2, mode in p.ancestor_nex:
+                        if len(p2.get_rects_main_line()) > 0:
+                            bef = p2.get_rects_main_line()[mode]
+                            x = p.get_rects_main_line()[-1]
+                            try:
+                                if bef is not None:
+                                    luck = LLuk.create_lluk_special([bef[0], bef[1], x[0], x[1]], 50)
+                                    my_canvases[0].shapes.add(PainterLLuk(luck[0]))
+                                    my_canvases[0].shapes.add(
+                                        PainterLineNormal(luck[1][0], luck[1][1], luck[2][0], luck[2][1],
+                                                          QtGui.QColor('blue'), 3))
+                            except Exception as e:
+                                pass
+                                #my_canvases[0].shapes.add(
+                                #    PainterLineNormal(x[0][0], x[0][1], x[1][0], x[1][1], QtGui.QColor('blue'), 3))
+            except Exception as e:
+                print('GLOB-ERR:', e)
+            '''
+            '''
+            try:
+                bef = p.rect.exterior.coords[-1]
+                for x in p.rect.exterior.coords:
+                    if bef is not None:
+                        x1, y1 = bef
+                        x2, y2 = x
+                        bef = x
+                        my_canvases[0].shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor('red'), 1))
+            except Exception:
+                pass
+            '''
+
+        for a in hebelki_all:
+            x1, y1 = a.linestring.coords[0]
+            x2, y2 = a.linestring.coords[1]
+            #my_canvases[0].shapes.add(PainterLine(x1, y1, x2, y2, QtGui.QColor('blue')))
+            x1, y1 = a.get_average_point().coords[0]
+            current_color = "green"
+            current_stroke = 1
+            for b in a.nast:
+                x2, y2 = b.get_average_point().coords[0]
+                if b in dfs_costam.hebelki_map:
+                    vals = dfs_costam.hebelki_map[b]
+                    current_color = manage_vals(vals, a)
+                my_canvases[0].shapes.add(PainterLineNormal(x1, y1, x2, y2, QtGui.QColor(current_color), current_stroke))
+        sys.exit(app.exec_())

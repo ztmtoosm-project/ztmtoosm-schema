@@ -80,7 +80,7 @@ class Hebelek(object):
         return self.linestring.interpolate(avv)
 
     def is_middle(self):
-        if len(self.nast | self.bef) == 2:
+        if len((self.nast | self.bef) - {self}) == 2:
             return True
         return False
 
@@ -92,6 +92,7 @@ class ZtmRoute(object):
         self.lineid = lineid
         self.wariant = wariant
         self.hebelki = []
+        self.hebelki2 = []
         current_res_list = []
         for x in range(0, len(stoplist)-1):
             start = stoplist[x]
@@ -119,25 +120,36 @@ class ZtmRoute(object):
             self.res2.append(tmpp)
 
     def extend_hebelki(self, lamane_set):
-        self.hebelki.clear()
+        self.hebelki = []
+        self.hebelki2 = []
         for x in self.res2:
             tmpp = []
+            tmpp2 = []
             for y in x:
                 if(y[0] in lamane_set and y[1]==1):
                     prepared_hebelki = reversed(lamane_set[y[0]].hebelki_sorted())
                     prepared_hebelki2 = []
-                    for dd in prepared_hebelki:
-                        if dd[1].todelete == False:
-                            prepared_hebelki2.append(dd)
+                    prepared_hebelki3 = [(lamane_set[y[0]], lamane_set[y[0]].linestring.length, None)]
+                    for distance, hebelek in prepared_hebelki:
+                        if hebelek.todelete == False:
+                            prepared_hebelki2.append((distance, hebelek))
+                            prepared_hebelki3.append((lamane_set[y[0]], distance, hebelek))
+                    prepared_hebelki3.append((lamane_set[y[0]], 0, None))
                     tmpp.extend(prepared_hebelki2)
+                    tmpp2.extend(prepared_hebelki3)
                 elif y[0] in lamane_set:
                     prepared_hebelki = lamane_set[y[0]].hebelki_sorted()
                     prepared_hebelki2 = []
-                    for dd in prepared_hebelki:
-                        if dd[1].todelete == False:
-                            prepared_hebelki2.append(dd)
+                    prepared_hebelki3 = [(lamane_set[y[0]], 0, None)]
+                    for distance, hebelek in prepared_hebelki:
+                        if hebelek.todelete == False:
+                            prepared_hebelki2.append((distance, hebelek))
+                            prepared_hebelki3.append((lamane_set[y[0]], distance, hebelek))
+                    prepared_hebelki3.append((lamane_set[y[0]], lamane_set[y[0]].linestring.length, None))
                     tmpp.extend(prepared_hebelki2)
+                    tmpp2.extend(prepared_hebelki3)
             self.hebelki.append(tmpp)
+            self.hebelki2.append(tmpp2)
         self.__extend_hebelki2()
 
     def __extend_hebelki2(self):
